@@ -1,0 +1,244 @@
+_target_: pl_modules.waymo_motion.WaymoMotion
+
+# 0 <= time_step_current < time_step_gt <= time_step_end
+# time_step_gt <= n_steps in data
+time_step_current: 10
+time_step_gt: 90
+time_step_end: 90
+time_step_sim_start: 1
+hidden_dim: 128
+n_video_batch: 3
+n_joint_future: 6
+interactive_challenge: False
+
+pre_processing:
+  scene_centric:
+    _target_: data_modules.scene_centric.SceneCentricPreProcessing
+  input:
+    _target_: data_modules.sc_input.SceneCentricInput
+    dropout_p_history: -1
+    pe_dim: 96
+    pose_pe: # xy_dir, mpa_pl, pe_xy_dir, pe_xy_unit_dir, pe_xy_yaw
+      map: pe_xy_yaw
+      tl: ${.map}
+      agent: ${.map}
+  latent:
+    _target_: data_modules.sc_latent.SceneCentricLatent
+    pe_dim: ${..input.pe_dim}
+    pose_pe: ${..input.pose_pe}
+    perturb_input_to_latent: False
+    dropout_p_history: -1
+    max_meter: 50.0
+    max_rad: 3.14
+
+model:
+  _target_: models.traffic_bots.TrafficBots
+  hidden_dim: ${..hidden_dim}
+  add_goal_latent_first: False
+  resample_latent: False # !
+  n_layer_tf_as2pl: 3
+  n_layer_tf_as2tl: 3
+  tf_cfg:
+    d_model: ${...hidden_dim}
+    n_head: 4
+    dropout_p: 0.1
+    norm_first: True
+    bias: True
+    activation: relu
+    d_feedforward: 128
+    out_layernorm: False
+  input_pe_encoder:
+    pe_mode: cat # input, cat, add
+    n_layer: 2
+    mlp_dropout_p: 0.1
+    mlp_use_layernorm: False
+  map_encoder:
+    pool_mode: max # max, mean, first
+    densetnt_vectornet: True
+    n_layer: 3
+    mlp_dropout_p: 0.1
+    mlp_use_layernorm: False
+  goal_manager:
+    disable_if_reached: True
+    goal_predictor:
+      mode: mlp # "transformer" or "transformer_aggr" or "mlp" or "attn"
+      n_layer_gru: 3
+      use_layernorm: True
+      res_add_gru: True
+      detach_features: True
+    goal_attr_mode: dest # dest, goal_xy, dummy
+    goal_in_local: True
+    dest_detach_map_feature: False
+  latent_encoder:
+    latent_dim: 16
+    temporal_down_sample_rate: 5
+    shared_post_prior_net: False
+    shared_transformer_as: True
+    latent_prior:
+      dist_type: diag_gaus # !
+      n_cat: 8
+      log_std: -1 # !
+      use_layernorm: False # !
+    latent_post:
+      dist_type: diag_gaus
+      n_cat: ${..latent_prior.n_cat}
+      log_std: ${..latent_prior.log_std}
+      use_layernorm: ${..latent_prior.use_layernorm}
+  temporal_aggregate:
+    mode: max_valid # !
+  agent_temporal:
+    _target_: models.modules.agent_temporal.MultiAgentGRULoop
+    num_layers: 3
+    dropout: 0.1
+  agent_interaction:
+    n_layer: 3
+    mask_self_agent: True # !
+    detach_tgt: False
+    attn_to_map_aware_feature: True
+  add_latent:
+    mode: cat # "add", "mul", "cat" or null
+    res_cat: False # !
+    res_add: True # !
+    n_layer_mlp_in: 2
+    n_layer_mlp_out: 2
+    mlp_in_cfg:
+      use_layernorm: False # !
+      activation: relu # !
+      dropout_p: 0.1
+    mlp_out_cfg: ${.mlp_in_cfg}
+  add_goal:
+    mode: ${..add_latent.mode}
+    res_cat: ${..add_latent.res_cat}
+    res_add: ${..add_latent.res_add}
+    n_layer_mlp_in: 3
+    n_layer_mlp_out: 2
+    mlp_in_cfg:
+      use_layernorm: True # !
+      activation: relu # !
+      dropout_p: 0.1
+    mlp_out_cfg: ${..add_latent.mlp_in_cfg}
+  interaction_first: True
+  n_layer_final_mlp: -1
+  final_mlp:
+    use_layernorm: False # !
+    activation: relu # !
+    dropout_p: 0.1
+
+teacher_forcing_training:
+  step_spawn_agent: ${..time_step_current}
+  step_warm_start: ${..time_step_current}
+  step_horizon: 0 # !
+  step_horizon_decrease_per_epoch: 0 # !
+  prob_forcing_agent: 0 # !
+  prob_forcing_agent_decrease_per_epoch: 0 # !
+
+action_head:
+  log_std: -2
+  branch_type: True
+  use_layernorm: False
+
+dynamics:
+  use_veh_dynamics_for_all: False
+  veh:
+    _target_: utils.dynamics.MultiPathPP
+    max_acc: 5
+    max_yaw_rate: 1.5
+    disable_neg_spd: False
+  cyc:
+    _target_: utils.dynamics.MultiPathPP
+    max_acc: 6 # !
+    max_yaw_rate: 3 # !
+    disable_neg_spd: False
+  ped:
+    _target_: utils.dynamics.MultiPathPP
+    max_acc: 7 # !
+    max_yaw_rate: 7 # !
+
+differentiable_reward:
+  w_collision: 0 # >=0 # !
+  reduce_collsion_with_max: True
+  use_il_loss: True
+  # all weight here >= 0
+  l_pos:
+    weight: 1e-1 # !
+    criterion: SmoothL1Loss # "MSELoss", "Smooth1Loss" or any pytorch loss in torch.nn
+  l_rot:
+    weight: 1e1 # !
+    criterion: SmoothL1Loss # "MSELoss", "Smooth1Loss" or any pytorch loss in torch.nn
+    angular_type: cosine # null, cast, cosine, vector
+  l_spd:
+    weight: 1e-1 # !
+    criterion: SmoothL1Loss # "MSELoss", "Smooth1Loss" or any pytorch loss in torch.nn
+
+step_detach_hidden: -1
+p_drop_hidden: -1.0 # 1e-3
+p_training_rollout_prior: 0.1 # !
+detach_state_policy: True # !
+training_deterministic_action: True
+
+waymo_post_processing:
+  k_pred: 6
+  use_ade: True
+  score_temperature: 1e2
+  mpa_nms_thresh: [] # veh, ped, cyc
+  mtr_nms_thresh: []
+  aggr_thresh: []
+  n_iter_em: 3
+
+sub_womd_reactive_replay:
+  activate: False
+  interactive_challenge: ${..interactive_challenge}
+  k_futures: 1
+  method_name: reactive_replay
+  authors: [NAME1, NAME2]
+  affiliation: AFFILIATION
+  description: scr_womd
+  method_link: METHOD_LINK
+
+sub_womd_joint_future_pred:
+  activate: False
+  interactive_challenge: ${..interactive_challenge}
+  k_futures: ${..waymo_post_processing.k_pred}
+  method_name: joint_future_pred
+  authors: [NAME1, NAME2]
+  affiliation: AFFILIATION
+  description: scr_womd
+  method_link: METHOD_LINK
+
+# * loss
+training_metrics:
+  w_vae_kl: 1e-1 # !
+  kl_balance_scale: -1 # !
+  kl_free_nats: 1e-2 # !
+  kl_for_unseen_agent: True # !
+  w_diffbar_reward: 1.0 # !
+  w_goal: 1.0 # !
+  w_relevant_agent: 0 # !
+  p_loss_for_irrelevant: -1.0 # !
+  loss_for_teacher_forcing: True # !
+  step_training_start: 10
+
+# * optimizer
+optimizer:
+  _target_: torch.optim.Adam
+  lr: 3e-4 # !
+lr_goal: ${.optimizer.lr}
+lr_scheduler:
+  _target_: torch.optim.lr_scheduler.StepLR
+  gamma: 0.5
+  step_size: 7
+
+# * no need to change
+teacher_forcing_reactive_replay:
+  step_spawn_agent: 90
+  step_warm_start: ${..time_step_current}
+
+teacher_forcing_joint_future_pred:
+  step_spawn_agent: ${..time_step_current}
+  step_warm_start: ${..time_step_current}
+
+traffic_rule_checker:
+  enable_check_collided: False
+  enable_check_run_road_edge: False
+  enable_check_run_red_light: False
+  enable_check_passive: False

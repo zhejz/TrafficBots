@@ -1,0 +1,30 @@
+checkpoint: null
+resume_trainer: True
+model_overrides:
+  n_video_batch: 0
+  waymo_post_processing:
+    k_pred: 6
+    use_ade: True
+    score_temperature: 1e2
+    mpa_nms_thresh: [] # veh, ped, cyc
+    mtr_nms_thresh: []
+    aggr_thresh: []
+    n_iter_em: 3
+  sub_womd_reactive_replay:
+    activate: True
+    interactive_challenge: False
+    k_futures: 1
+    method_name: reactive_replay
+    authors: [NAME1, NAME2]
+    affiliation: AFFILIATION
+    description: scr_womd
+    method_link: METHOD_LINK
+  sub_womd_joint_future_pred:
+    activate: True
+    interactive_challenge: False
+    k_futures: 6
+    method_name: joint_future_pred
+    authors: [NAME1, NAME2]
+    affiliation: AFFILIATION
+    description: scr_womd
+    method_link: METHOD_LINK
